@@ -37,8 +37,6 @@ class ListenQueue(threading.Thread):
     def _data_handler(self, json_data):
         job_id = json_data['job_id'] if 'job_id' in json_data else None
         try:
-            work_id = json_data['work_id']
-            self.helper.current_work_id = work_id
             self.helper.api.job.update_job(job_id, 'progress', ['Starting process'])
             messages = self.callback(json_data)
             self.helper.api.job.update_job(job_id, 'complete', messages)
@@ -116,7 +114,6 @@ class OpenCTIConnectorHelper:
 
         # Initialize configuration
         self.api = OpenCTIApiClient(self.opencti_url, self.opencti_token, self.log_level)
-        self.current_work_id = None
 
         # Register the connector in OpenCTI
         self.connector = OpenCTIConnector(self.connect_id, self.connect_name, self.connect_type, self.connect_scope)
@@ -156,7 +153,7 @@ class OpenCTIConnectorHelper:
         return datetime.datetime.utcnow().replace(microsecond=0, tzinfo=datetime.timezone.utc).isoformat()
 
     # Push Stix2 helper
-    def send_stix2_bundle(self, bundle, entities_types=None):
+    def send_stix2_bundle(self, work_id, bundle, entities_types=None):
         if entities_types is None:
             entities_types = []
         bundles = self.split_stix2_bundle(bundle)
@@ -165,11 +162,11 @@ class OpenCTIConnectorHelper:
         pika_connection = pika.BlockingConnection(pika.URLParameters(self.config['uri']))
         channel = pika_connection.channel()
         for bundle in bundles:
-            self._send_bundle(channel, bundle, entities_types)
+            self._send_bundle(work_id, channel, bundle, entities_types)
         channel.close()
         return bundles
 
-    def _send_bundle(self, channel, bundle, entities_types=None):
+    def _send_bundle(self, work_id, channel, bundle, entities_types=None):
         """
             This method send a STIX2 bundle to RabbitMQ to be consumed by workers
             :param bundle: A valid STIX2 bundle
@@ -179,10 +176,9 @@ class OpenCTIConnectorHelper:
             entities_types = []
 
         # Create a job log expectation
-        if self.current_work_id is not None:
-            job_id = self.api.job.initiate_job(self.current_work_id)
-        else:
-            job_id = None
+        if work_id is None:
+            raise ValueError('A current_work_id must be setup')
+        job_id = self.api.job.initiate_job(work_id)
 
         # Validate the STIX 2 bundle
         # validation = validate_string(bundle)
@@ -190,8 +186,6 @@ class OpenCTIConnectorHelper:
         # raise ValueError('The bundle is not a valid STIX2 JSON')
 
         # Prepare the message
-        # if self.current_work_id is None:
-        #    raise ValueError('The job id must be specified')
         message = {
             'job_id': job_id,
             'entities_types': entities_types,
